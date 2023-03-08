@@ -1,4 +1,6 @@
-mport os,requests,shutil,glob
+#!/usr/bin/env python3
+
+import os,requests,shutil
 from mpegdash.parser import MPEGDASHParser
 from mpegdash.nodes import Descriptor
 from mpegdash.utils import (
@@ -23,57 +25,31 @@ def durationtoseconds(period):
         hour = int(period.split("H")[0].split("D")[-1]  if 'H' in period else 0)
         minute = int(period.split("M")[0].split("H")[-1] if 'M' in period else 0)
         second = period.split("S")[0].split("M")[-1]
-        print("Total time: " + str(day) + " days " + str(hour) + " hours " + str(minute) + " minutes and " + str(second) + " seconds")
         total_time = float(str((day * 24 * 60 * 60) + (hour * 60 * 60) + (minute * 60) + (int(second.split('.')[0]))) + '.' + str(int(second.split('.')[-1])))
+        print("Total time: ", total_time, " seconds")
         return total_time
 
     else:
         print("Duration Format Error")
         return None
 
-def download_media(filename,url,epoch = 0):
-    if(os.path.isfile(filename)):
-        media_head = requests.head(url, allow_redirects = True)
-        if media_head.status_code == 200:
-            media_length = int(media_head.headers.get("content-length"))
-            if(os.path.getsize(filename) >= media_length):
-                print("Video already downloaded.. skipping Downloading..")
-            else:
-                print("Redownloading faulty download..")
-                os.remove(filename) #Improve removing logic
-                download_media(filename,url)
+def download_media(base_url, media_segments):
+    for media_url in media_segments:
+        file_name = media_url.split("?")[0]
+        if(os.path.isfile(file_name)):
+            print("Video already downloaded.. skipping Downloading..")
         else:
-            if (epoch > retry):
-                exit("Server doesn't support HEAD.")
-            download_media(filename,url,epoch + 1)
-    else:
-        media = requests.get(url, stream=True)
-        media_length = int(media.headers.get("content-length"))
-        if media.status_code == 200:
-            if(os.path.isfile(filename) and os.path.getsize(filename) >= video_length):
-                print("Video already downloaded.. skipping write to disk..")
-            else:
+            full_url = base_url + media_url
+            media = requests.get(full_url, stream=True)
+            if media.status_code == 200:
                 try:
-                    with open(filename, 'wb') as video_file:
+                    with open(file_name, 'wb') as video_file:
                         shutil.copyfileobj(media.raw, video_file)
-                        return False #Successfully downloaded the file
                 except:
-                    print("Connection error: Reattempting download of video..")
-                    download_media(filename,url, epoch + 1)
+                    print("Failed to save file: " + file_name)
 
-            if os.path.getsize(filename) >= video_length:
-                pass
             else:
-                print("Error downloaded video is faulty.. Retrying to download")
-                download_media(filename,url, epoch + 1)
-        elif(media.status_code == 404):
-            print("Probably end hit!\n",url)
-            return True #Probably hit the last of the file
-        else:
-            if (epoch > retry):
-                exit("Error Video fetching exceeded retry times.")
-            print("Error fetching video file.. Retrying to download")
-            download_media(filename,url, epoch + 1)
+                print("Error code: ", media.status_code, full_url)
 
 
 def handle_irregular_segments(media_info):
@@ -102,7 +78,6 @@ def handle_irregular_segments(media_info):
 
 def manifest_parser(mpd_url):
     media_segments = []
-    audio = []
     manifest = requests.get(mpd_url).text
     with open("manifest.mpd",'w') as manifest_handler:
         manifest_handler.write(manifest)
@@ -113,38 +88,43 @@ def manifest_parser(mpd_url):
         running_time = durationtoseconds(mpd.media_presentation_duration)
     for period in mpd.periods:
         for adapt_set in period.adaptation_sets:
-            print("Processing " + adapt_set.mime_type)
-            content_type = adapt_set.mime_type
-            repr = adapt_set.representations[-1] # Max Quality
-            for segment in repr.segment_templates:
-                if(segment.duration):
-                    print("Media segments are of equal timeframe")
-                    segment_time = segment.duration / segment.timescale
-                    total_segments = running_time / segment_time
-                else:
-                    print("Media segments are of inequal timeframe")
-                    print(segment.media)
-                    for timeline in segment.segment_timelines:
-                        last_s = timeline.Ss[-1]
-                        print("last_s:", last_s.t ,last_s.d , last_s.r)
+            #print("Processing AdaptationSet " + adapt_set.content_type)
+            for repr in adapt_set.representations:
+                for segment in repr.segment_templates:
+                    last_t = 0
+                    total_segments = 0
+                    for S in segment.segment_timelines[0].Ss:
+                        if(S.t):
+                            last_t = S.t
+                        if(S.r):
+                            last_t = last_t + S.d * S.r
+                            total_segments += (S.r + 1) 
+                        else:
+                            last_t = last_t + S.d
+                            total_segments += 1
+                    media_file = segment.media.replace("$RepresentationID$", repr.id)
+                    media_file = media_file.replace("$Time$", str(last_t))
+                    if(segment.duration):
+                        print("Media segments are of equal timeframe")
+                        segment_time = segment.duration / segment.timescale
+                        total_segments = running_time / segment_time
 
-                    media_file = segment.media
-                    media_file.replace("$Number$", segment.start_number)#
-                    media_file.replace("$RepresentationID$", repr.id)
-                    media_file.replace("$Time$", last_s.t + last_s.d * last_s.r)
-                    
+                    media_file.replace("$Number$", str(segment.start_number + total_segments))
+                    #print(total_segments) 
                     media_segments.append(media_file)
                     print(media_file)
-                    
 
     return media_segments
 
 
 
 if __name__ == "__main__":
-    mpd = "http://31.30.141.198:80/cdn.vodafone.cz/LIVE/5066/sfmt=shls/6.mpd?start=LIVE&end=END&device=DASH_STB_NGRSSP_LIVE_SD"
-    base_url = mpd.split("6.mpd")[0]
+    mpd = "http://127.0.0.1/dash.mpd"
+    base_url = mpd.split("?")[0]
+    base_url = base_url.split("/")[-1]
+    base_url = mpd.split(base_url)[0]
+    print(base_url)
     os.chdir(working_dir)
-    media_info = manifest_parser(mpd)
-    #handle_irregular_segments(media_info)
+    media_segments = manifest_parser(mpd)
+    download_media(base_url, media_segments)
 
