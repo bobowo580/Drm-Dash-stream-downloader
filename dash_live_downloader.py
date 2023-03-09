@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from time import sleep
+from threading import Thread
 import os,requests,shutil
 from mpegdash.parser import MPEGDASHParser
 from mpegdash.nodes import Descriptor
@@ -33,23 +35,34 @@ def durationtoseconds(period):
         print("Duration Format Error")
         return None
 
-def download_media(base_url, media_segments):
-    for media_url in media_segments:
-        file_name = media_url.split("?")[0]
-        if(os.path.isfile(file_name)):
-            print("Video already downloaded.. skipping Downloading..")
-        else:
-            full_url = base_url + media_url
-            media = requests.get(full_url, stream=True)
-            if media.status_code == 200:
-                try:
-                    with open(file_name, 'wb') as video_file:
-                        shutil.copyfileobj(media.raw, video_file)
-                except:
-                    print("Failed to save file: " + file_name)
+def async(f):
+    def wrapper(*args, **kwargs):
+        thr = Thread(target = f, args = args, kwargs = kwargs)
+        thr.start()
+    return wrapper
 
-            else:
-                print("Error code: ", media.status_code, full_url)
+
+@async
+def download_media(base_url, media_url):
+    file_name = media_url.split("?")[0]
+    if(os.path.isfile(file_name)):
+        print(file_name + " already downloaded.. skipping.")
+    else:
+        full_url = base_url + media_url
+        print("Downloading " + full_url)
+        media = requests.get(full_url, stream=True)
+        if media.status_code == 200:
+            try:
+                with open(file_name, 'wb') as f:
+                    #shutil.copyfileobj(media.raw, f)
+                    for chunk in media.iter_content(chunk_size = 102400):
+                        f.write(chunk)
+            except:
+                print("Failed to save file: " + file_name)
+
+        else:
+            print("Error code: ", media.status_code, full_url)
+    print("download finished " + file_name)
 
 
 def handle_irregular_segments(media_info):
@@ -109,7 +122,7 @@ def manifest_parser(mpd_url):
                         segment_time = segment.duration / segment.timescale
                         total_segments = running_time / segment_time
 
-                    media_file.replace("$Number$", str(segment.start_number + total_segments))
+                    media_file = media_file.replace("$Number$", str(segment.start_number + total_segments))
                     #print(total_segments) 
                     media_segments.append(media_file)
                     print(media_file)
@@ -126,5 +139,9 @@ if __name__ == "__main__":
     print(base_url)
     os.chdir(working_dir)
     media_segments = manifest_parser(mpd)
-    download_media(base_url, media_segments)
+    while True:
+        for media_url in media_segments:
+            download_media(base_url, media_url)
+        sleep(1)
+        media_segments = manifest_parser(mpd)
 
