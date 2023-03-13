@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 
 from time import sleep
-from threading import Thread
-import os,requests,shutil
+import os
+import asyncio,aiohttp,requests
 from mpegdash.parser import MPEGDASHParser
-from mpegdash.nodes import Descriptor
-from mpegdash.utils import (
-    parse_attr_value, parse_child_nodes, parse_node_value,
-    write_attr_value, write_child_node, write_node_value
-)
+#from mpegdash.nodes import Descriptor
+#from mpegdash.utils import (
+#    parse_attr_value, parse_child_nodes, parse_node_value,
+#    write_attr_value, write_child_node, write_node_value
+#)
 
-#global ids
-retry = 3
-download_dir = os.getcwd() # set the folder to output
-working_dir = os.getcwd() + "/working_dir" # set the folder to download ephemeral files
+download_dir = os.getcwd() + "/download" # set the folder to download files
 
-if not os.path.exists(working_dir):
-    os.makedirs(working_dir)
+if not os.path.exists(download_dir):
+    os.makedirs(download_dir)
 
 
 def durationtoseconds(period):
@@ -35,59 +32,52 @@ def durationtoseconds(period):
         print("Duration Format Error")
         return None
 
-def async(f):
-    def wrapper(*args, **kwargs):
-        thr = Thread(target = f, args = args, kwargs = kwargs)
-        thr.start()
-    return wrapper
-
-
-@async
-def download_media(base_url, media_url):
+async def download_file(url, file_name):
+    async with aiohttp.ClientSession() as session:
+        print("downloading " + url)
+        async with session.get(url) as resp:
+            with open(file_name, 'wb') as f:
+                while True:
+                    chunk = await resp.content.read(10240)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+        print("download finished " + file_name)
+        
+async def download_files(base_url, media_segments):
+    tasks = []
+    for media_url in media_segments:
+        file_name = media_url.split("?")[0]
+        if(os.path.isfile(file_name)):
+            print(file_name + " already downloaded.. skipping.")
+        else:
+            tasks.append(download_file(base_url + media_url, file_name)) 
+    await asyncio.gather(*tasks)
+            
+async def download_media(base_url, media_url):
     file_name = media_url.split("?")[0]
     if(os.path.isfile(file_name)):
         print(file_name + " already downloaded.. skipping.")
     else:
         full_url = base_url + media_url
         print("Downloading " + full_url)
-        media = requests.get(full_url, stream=True)
-        if media.status_code == 200:
-            try:
-                with open(file_name, 'wb') as f:
-                    #shutil.copyfileobj(media.raw, f)
-                    for chunk in media.iter_content(chunk_size = 102400):
-                        f.write(chunk)
-            except:
-                print("Failed to save file: " + file_name)
+        #media = await requests.get(full_url, stream=True)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if media.status_code == 200:
+                    try:
+                        with open(file_name, 'wb') as f:
+                            await f.write(resp.content())
+                            #for chunk in media.iter_content(chunk_size = 102400):
+                            #    await f.write(chunk)
+                    except:
+                        print("Failed to save file: " + file_name)
 
-        else:
-            print("Error code: ", media.status_code, full_url)
+                else:
+                    print("Error code: ", media.status_code, full_url)
     print("download finished " + file_name)
 
 
-def handle_irregular_segments(media_info):
-    no_segment,video_url,video_kid,video_extension,no_segment,audio_url,audio_kid,audio_extension = media_info
-    video_url = base_url + video_url
-    audio_url = base_url + audio_url   
-    #video_init = video_url.replace("$Number$","init")
-   # audio_init = audio_url.replace("$Number$","init")
-   # download_media("video_0.mp4",video_init)
-   # download_media("audio_0.mp4",audio_init)
-    for count in range(1,no_segment):
-        video_segment_url = video_url.replace("$Number$",str(count))
-        audio_segment_url = audio_url.replace("$Number$",str(count))
-        video_status = download_media(f"video_{str(count)}.{video_extension}",video_segment_url)   
-        audio_status = download_media(f"audio_{str(count)}.{audio_extension}",audio_segment_url)
-        if(video_status):
-            if os.name == "nt":
-                video_concat_command = "copy /b " + "+".join([f"video_{i}.{video_extension}" for i in range(0,count)]) + " encrypted_video.mp4"
-                audio_concat_command = "copy /b " + "+".join([f"audio_{i}.{audio_extension}" for i in range(0,count)]) + " encrypted_audio.mp4"
-            else:
-                video_concat_command = "cat " + " ".join([f"video_{i}.{video_extension}" for i in range(0,count)]) + " > encrypted_video.mp4"
-                audio_concat_command = "cat " + " ".join([f"audio_{i}.{audio_extension}" for i in range(0,count)]) + " > encrypted_audio.mp4"
-            os.system(video_concat_command)
-            os.system(audio_concat_command)
-            break
 
 def manifest_parser(mpd_url):
     media_segments = []
@@ -125,23 +115,24 @@ def manifest_parser(mpd_url):
                     media_file = media_file.replace("$Number$", str(segment.start_number + total_segments))
                     #print(total_segments) 
                     media_segments.append(media_file)
-                    print(media_file)
+                    #print(media_file)
 
     return media_segments
 
 
 
 if __name__ == "__main__":
-    mpd = "http://127.0.0.1/dash.mpd"
+    mpd = "http://31.30.141.132:80/cdn.vodafone.cz/LIVE/5066/sfmt=shls/6.mpd?start=LIVE&end=END&device=DASH_STB_NGRSSP_LIVE_SD"
     base_url = mpd.split("?")[0]
     base_url = base_url.split("/")[-1]
     base_url = mpd.split(base_url)[0]
     print(base_url)
-    os.chdir(working_dir)
+    os.chdir(download_dir)
     media_segments = manifest_parser(mpd)
+    
     while True:
-        for media_url in media_segments:
-            download_media(base_url, media_url)
+        asyncio.run(download_files(base_url, media_segments))
         sleep(1)
         media_segments = manifest_parser(mpd)
+
 
