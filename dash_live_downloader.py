@@ -122,7 +122,7 @@ def manifest_parser(mpd_url):
 
 
 if __name__ == "__main__":
-    mpd = "http://31.30.141.132:80/cdn.vodafone.cz/LIVE/5066/sfmt=shls/6.mpd?start=LIVE&end=END&device=DASH_STB_NGRSSP_LIVE_SD"
+    mpd = "http://127.0.0.1/dash.mpd"
     base_url = mpd.split("?")[0]
     base_url = base_url.split("/")[-1]
     base_url = mpd.split(base_url)[0]
